@@ -31,7 +31,6 @@ from pathlib import Path
 from typing import List, Optional
 from enum_actions import enum_action
 from datetime import datetime
-
 from tqdm import tqdm
 import os
 import csv
@@ -73,9 +72,29 @@ class ToolTester:
         self.num_processes = num_processes
         self.num_iterations = num_iterations
 
+
     def read_violation_from_file(self, file: str) -> Violation:
         with open(file, 'rb') as f:
             return pickle.load(f)
+        
+        
+    def get_file_type(self, tool) -> str:
+        match tool.lower():
+            case "soot" | "wala" | "doop": return 'jar'
+            case "wala-js" | "tajs": return 'js'
+            case "flowdroid": return 'apk'
+            
+    
+    def generate_comparable_results(self, tool, file, reader) -> set:
+        match tool.lower():
+            case "flowdroid" | "tajs":
+                return set(reader.import_file(file)) 
+            case "wala-js" | "wala" | "doop" | "soot":
+                results = []
+                with open(file, "r") as f:
+                    for line in f:
+                        results.append(reader.process_line(line))
+                return set(results)
         
         
     def move_nd_files(self, file, tool, benchmark):
@@ -127,32 +146,26 @@ class ToolTester:
         tool_name = locations[len(locations) - 2]
         benchmark_name = locations[len(locations) - 1]
         
-        match tool_name.lower():
-            case "flowdroid":
-                for file in os.listdir(os.path.join(self.results_location, 'iteration0')):
-                    if file.endswith('.apk.raw'):
-                        nd_result_record = [file.split('_', 1)[0], file.rsplit('_', 1)[-1].replace('.apk.raw', '')]
-                        file_s = f'{self.results_location}/iteration0/{file}'
-                        flows_s = set(self.reader.import_file(file_s)) 
-                        nondeterminism = False
-                        error = False
-                        for campaign_index in range(1, self.num_iterations - 1):
-                            if not os.path.exists(f'{self.results_location}/iteration{campaign_index}/{file}'):
-                                error = True
-                            else:
-                                file_t = f'{self.results_location}/iteration{campaign_index}/{file}'
-                                flows_t = set(self.reader.import_file(file_t)) 
-
-                                if not flows_s == flows_t:
-                                    nondeterminism = True
-                                    self.move_nd_files(file, tool_name, benchmark_name)
-                                    break
-
-                        nd_result_record.append(nondeterminism)
-                        nd_result_record.append(error)
-                        nd_results.append(nd_result_record)
-            case _:
-                pass
+        for file in os.listdir(os.path.join(self.results_location, 'iteration0')):
+            if file.endswith(f'.{self.get_file_type(tool_name)}.raw'):
+                nd_result_record = [file.split('_', 1)[0], file.rsplit('_', 1)[-1].replace(f'.{self.get_file_type(tool_name)}.raw', '')]
+                file_s = f'{self.results_location}/iteration0/{file}'
+                results_s = self.generate_comparable_results(tool_name, file_s, self.reader)
+                nondeterminism = False
+                error = False
+                for campaign_index in range(1, self.num_iterations):
+                    if not os.path.exists(f'{self.results_location}/iteration{campaign_index}/{file}'):
+                        error = True
+                    else:
+                        file_t = f'{self.results_location}/iteration{campaign_index}/{file}'
+                        results_t = self.generate_comparable_results(tool_name, file_t, self.reader)
+                        if not results_s == results_t:
+                            nondeterminism = True
+                            self.move_nd_files(file, tool_name, benchmark_name)
+                            break
+                nd_result_record.append(nondeterminism)
+                nd_result_record.append(error)
+                nd_results.append(nd_result_record)        
         
         self.generate_result_csv(nd_results, tool_name, benchmark_name)
         
